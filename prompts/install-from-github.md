@@ -7,7 +7,7 @@ Goal:
 Install CC Agent Brain as an add-on to the existing project. Do not replace or overwrite my existing `.claude/` directory.
 
 Source:
-GitHub repository: https://github.com/lifuguan/cc-agent-brain
+GitHub repository: https://github.com/syiibfs-hash/cc-agent-brain
 
 Installation requirements:
 1. Download or clone the repository to a temporary directory.
