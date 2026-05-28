@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Temporary installs and tests
+.tmp/
+tmp/
+build/
+dist/
+*.zip
+
+# If someone tests the package in the repo root, avoid committing generated personal data
+memory/
+wiki/
+private/
+.cc-agent-brain/
+CLAUDE.local.md
+.claude/settings.local.json
+
+# Secrets
+.env
+*.key
+*.pem
+credentials.*
+tokens.*
