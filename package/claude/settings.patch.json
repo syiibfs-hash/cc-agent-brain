@@ -39,6 +39,10 @@
         "hooks": [
           {
             "type": "command",
+            "command": "python .claude/hooks/cc-agent-brain/transcript_capture.py"
+          },
+          {
+            "type": "command",
             "command": "python .claude/hooks/cc-agent-brain/memory_audit.py --light"
           }
         ]

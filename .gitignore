@@ -25,6 +25,12 @@ private/
 CLAUDE.local.md
 .claude/settings.local.json
 
+# Local brain engine databases
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+
 # Secrets
 .env
 *.key

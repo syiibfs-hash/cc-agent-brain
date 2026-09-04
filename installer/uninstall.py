@@ -54,7 +54,11 @@ def main() -> int:
     if not args.dry_run:
         manifest_path.unlink(missing_ok=True)
 
-    print(json.dumps({"removed": removed, "skipped": skipped, "preserved": ["memory/", "wiki/", "private/"]}, ensure_ascii=False, indent=2))
+    print(json.dumps({
+        "removed": removed,
+        "skipped": skipped,
+        "preserved": ["memory/", "wiki/", "private/", ".cc-agent-brain/brain.db (local engine data)"],
+    }, ensure_ascii=False, indent=2))
     return 0
 
 

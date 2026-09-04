@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""SessionStart hook: check onboarding and local brain files."""
+"""SessionStart hook: check onboarding state and surface engine status."""
 
 from __future__ import annotations
 
 from pathlib import Path
-import sys
+
+from _utils import brain_cli
 
 ROOT = Path.cwd()
 required = [
@@ -25,7 +26,16 @@ if missing:
         "Missing or empty files: " + ", ".join(missing)
     )
 else:
-    print(
-        "CC Agent Brain loaded. Read memory/MEMORY.md and follow memory/retrieval-policy.md. "
-        "Use wiki/ as the local second brain when memory is insufficient."
-    )
+    stats = brain_cli(["stats"])
+    if isinstance(stats, dict):
+        print(
+            "CC Agent Brain loaded. Read memory/MEMORY.md and follow memory/retrieval-policy.md. "
+            f"Local engine: {stats.get('memories_active', 0)} active memories, "
+            f"{stats.get('events_total', 0)} captured events. "
+            "Retrieval is automatic (FTS5); search wiki/ when deeper context is needed."
+        )
+    else:
+        print(
+            "CC Agent Brain loaded. Read memory/MEMORY.md and follow memory/retrieval-policy.md. "
+            "Use wiki/ as the local second brain when memory is insufficient."
+        )

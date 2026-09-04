@@ -6,6 +6,7 @@ This installer is intentionally conservative:
 - It installs files under the `cc-agent-brain` namespace.
 - It backs up `.claude/settings.json` before merging hook settings.
 - It records installed files in `.cc-agent-brain/install-manifest.json`.
+- It initializes the local SQLite memory engine (brain.db) when not in dry-run.
 """
 
 from __future__ import annotations
@@ -13,6 +14,8 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List
@@ -21,6 +24,7 @@ from merge_settings import dump_json, load_json, merge_settings
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "package"
+VERSION = "0.2.0"
 
 
 def copy_file(src: Path, dst: Path, dry_run: bool, files_added: List[str], files_skipped: List[str]) -> None:
@@ -52,6 +56,24 @@ def ensure_dir(path: Path, dry_run: bool, dirs_created: List[str]) -> None:
         if not dry_run:
             path.mkdir(parents=True, exist_ok=True)
         dirs_created.append(str(path))
+
+
+def init_engine(target: Path, dry_run: bool) -> str:
+    """Initialize the project-local brain database."""
+    engine = target / ".claude" / "hooks" / "cc-agent-brain" / "brain_store.py"
+    db_path = target / ".cc-agent-brain" / "brain.db"
+    if dry_run or not engine.exists() or db_path.exists():
+        return "skipped"
+    try:
+        subprocess.run(
+            [sys.executable, str(engine), "--db", str(db_path), "init"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        return "initialized"
+    except (OSError, subprocess.TimeoutExpired):
+        return "unavailable"
 
 
 def main() -> int:
@@ -97,6 +119,9 @@ def main() -> int:
     else:
         settings_merged = True
 
+    # Initialize the local memory engine.
+    engine_state = init_engine(target, args.dry_run)
+
     # User-data directories contain templates that users will personalise.
     # They must not be tracked in the manifest, otherwise the uninstaller
     # would delete user-modified content.
@@ -131,7 +156,7 @@ def main() -> int:
     merged_skipped = sorted(set(s for s in files_skipped + existing_skipped if s not in merged_added))
     merged_dirs = sorted(set(dirs_created + existing_dirs))
     manifest: Dict[str, object] = {
-        "version": "0.1.0",
+        "version": VERSION,
         "installed_at": datetime.now().isoformat(timespec="seconds"),
         "target": str(target),
         "files_added": merged_added,
@@ -140,6 +165,7 @@ def main() -> int:
         "settings_path": str(settings_path),
         "settings_backup": str(settings_backup),
         "settings_merged": settings_merged,
+        "engine_state": engine_state,
     }
     if not args.dry_run:
         manifest_dir.mkdir(parents=True, exist_ok=True)

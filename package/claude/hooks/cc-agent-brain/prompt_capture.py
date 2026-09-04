@@ -1,27 +1,25 @@
 #!/usr/bin/env python3
-"""UserPromptSubmit hook: append prompt metadata to local Wiki sessions.
+"""UserPromptSubmit hook: capture every prompt.
 
-The hook captures every user prompt as-is. Secrets and credentials are not
-filtered here — that belongs in the memory-distill skill layer, where a
-human-curated rule ("Do not distill secrets, tokens, passwords, or
-credentials") prevents sensitive data from entering long-term memory.
+Two sinks:
+  1. Append a human-readable copy to wiki/sessions/YYYY-MM-DD.md (projection).
+  2. Insert an event into the local brain engine (SQLite FTS5 index).
 
-The local wiki/ and memory/ directories are excluded from git by the
-project's .gitignore, so raw prompts remain local-only.
+Secret redaction happens inside the engine at write time. The raw Markdown
+copy stays local and wiki/ is git-ignored.
 """
 
 from __future__ import annotations
 
-import sys
 from datetime import datetime
 from pathlib import Path
 
-from _utils import read_stdin_json
+from _utils import brain_event, read_stdin_json
 
 data = read_stdin_json()
 prompt = str(data.get("prompt") or data.get("raw_stdin") or "").strip()
 if not prompt:
-    sys.exit(0)
+    raise SystemExit(0)
 
 root = Path.cwd()
 sessions = root / "wiki" / "sessions"
@@ -37,4 +35,7 @@ with file.open("a", encoding="utf-8") as f:
     f.write("- source: user_prompt\n")
     f.write("- memory_candidate: pending\n")
 
-print("CC Agent Brain captured this prompt into local wiki/sessions.")
+# Structured sink — indexed for real retrieval (best-effort, never blocks).
+brain_event("user", prompt, tags=["user_prompt"], source="prompt_capture")
+
+print("CC Agent Brain captured this prompt into wiki/sessions and the local engine.")

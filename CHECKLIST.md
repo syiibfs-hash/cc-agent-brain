@@ -2,70 +2,63 @@
 
 ## 1. 项目定位检查
 
-- [ ] README 第一屏说明：这是 Claude Code 的本地第二大脑系统。
+- [ ] README 第一屏说明：这是编码 Agent 的本地记忆引擎（本地优先、零依赖、MCP 跨工具）。
 - [ ] README 明确说明：不会替换已有 `.claude/`，只做增量合并。
-- [ ] README 明确说明：v0.1 不做云同步，不做 GitHub 私有备份。
-- [ ] README 明确说明：GitHub 只开源框架，不开源用户个人 Wiki / memory。
+- [ ] README 明确说明：全程本地运行，无云同步、无遥测、无网络请求。
+- [ ] README 明确说明：GitHub 只开源框架，不开源用户个人 Wiki / memory / 数据库。
 
 ## 2. 目录结构检查
 
-- [ ] `installer/` 存在。
-- [ ] `package/claude/skills/` 存在。
-- [ ] `package/claude/agents/` 存在。
-- [ ] `package/claude/hooks/cc-agent-brain/` 存在。
-- [ ] `package/memory_templates/` 存在。
-- [ ] `package/wiki_templates/` 存在。
-- [ ] `package/templates/` 存在。
-- [ ] `prompts/` 存在。
-- [ ] `docs/` 存在。
-- [ ] `examples/` 存在。
+- [ ] `installer/` 存在（install/uninstall/update/merge_settings）。
+- [ ] `package/claude/skills/` 下 6 个技能齐全。
+- [ ] `package/claude/agents/` 下 3 个代理齐全。
+- [ ] `package/claude/hooks/cc-agent-brain/` 下 6 个钩子 + `brain_store.py` + `_utils.py`。
+- [ ] `package/memory_templates/`、`package/wiki_templates/`、`package/templates/` 齐全。
+- [ ] `prompts/`、`docs/`、`examples/` 存在。
 
 ## 3. 安装器检查
 
-- [ ] `installer/install.py` 不覆盖用户已有 `.claude/`。
-- [ ] 安装器会创建 `.claude/skills/cc-agent-brain-*`。
-- [ ] 安装器会创建 `.claude/agents/cc-agent-brain-*.md`。
-- [ ] 安装器会创建 `.claude/hooks/cc-agent-brain/`。
-- [ ] 安装器会备份 `.claude/settings.json`。
-- [ ] 安装器只合并 settings，不整体覆盖 settings。
-- [ ] 安装器会生成 `.cc-agent-brain/install-manifest.json`。
-- [ ] 安装器支持 `--dry-run`。
+- [ ] 不覆盖用户已有 `.claude/`，安装前备份 settings。
+- [ ] settings 只增量合并且重复安装不产生重复 hook。
+- [ ] 生成 `.cc-agent-brain/install-manifest.json`，版本号与 CHANGELOG 一致。
+- [ ] 安装时初始化 `.cc-agent-brain/brain.db`，manifest 记录 engine_state。
+- [ ] 支持 `--dry-run`，预览不写盘。
+- [ ] 卸载只删框架文件，保留 memory/ wiki/ private/ 与 brain.db。
 
-## 4. Hook 检查
+## 4. 引擎与 Hook 检查
 
-- [ ] `session_start.py` 能检测 onboarding 是否缺失。
-- [ ] `prompt_capture.py` 能写入 `wiki/sessions/YYYY-MM-DD.md`。
-- [ ] `wiki_context_hint.py` 能在用户提到历史、项目、上次、之前时提示检索 Wiki。
-- [ ] `pre_compact_save.py` 能在上下文压缩前生成 checkpoint。
-- [ ] `memory_audit.py` 能做轻量审计。
+- [ ] `python -m py_compile` 全部脚本通过。
+- [ ] `brain_store.py init/stats/event/memory/search/audit/timeline/sync-md` 可用。
+- [ ] 中文与英文检索都能命中（CJK bigram 分词）。
+- [ ] supersede/expire 后旧记忆不再被 active 检索命中，timeline 保留历史。
+- [ ] `serve-mcp` 能完成 initialize / tools/list / tools/call 握手。
+- [ ] 捕获层对常见密钥形态脱敏（构造样例验证）。
+- [ ] `prompt_capture.py` 双写 Markdown 与事件流。
+- [ ] `transcript_capture.py` 能解析助手回复/工具调用且二次运行幂等。
+- [ ] `wiki_context_hint.py` 走真实检索而非关键词表。
+- [ ] `memory_audit.py` 能报重复、断链、过期、积压。
+- [ ] 引擎不可用时各 hook 静默降级，不阻塞用户。
 
-## 5. Skill 检查
+## 5. Skill / Agent 检查
 
-- [ ] `cc-agent-brain-onboard-user` 写明分支式初始化问题。
-- [ ] `cc-agent-brain-wiki-update` 写明 Wiki 更新规则。
-- [ ] `cc-agent-brain-wiki-search` 写明检索顺序。
-- [ ] `cc-agent-brain-memory-distill` 写明从 Wiki 精炼 memory 的规则。
-- [ ] `cc-agent-brain-memory-audit` 写明冲突、过期、重复检查。
-- [ ] `cc-agent-brain-material-distill` 写明素材沉淀规则。
+- [ ] 6 个 skill 均指向引擎 CLI，工作流与版本化记忆 schema 一致。
+- [ ] 3 个 agent 的职责与工具声明正确。
 
 ## 6. 隐私检查
 
-- [ ] `.gitignore` 不会忽略开源包里的模板文件。
-- [ ] 用户个人 `memory/`、`wiki/`、`private/` 被说明为本地内容。
-- [ ] README 提醒用户不要上传真实个人 Wiki。
-- [ ] `private/` 不会被默认安装为可公开内容。
+- [ ] `.gitignore` 忽略 memory/ wiki/ private/ .cc-agent-brain/ 与 *.db*。
+- [ ] README 提醒不要上传真实个人数据。
+- [ ] 引擎在写入时脱敏，文档说明其为尽力而为、不能替代"不存密钥"。
 
 ## 7. GitHub 发布检查
 
-- [ ] 仓库名建议为 `cc-agent-brain`。
-- [ ] Description 建议为：`A local Wiki-first second brain system for Claude Code`。
-- [ ] 选择 MIT License。
-- [ ] 上传前运行 `python -m py_compile` 检查脚本语法。
-- [ ] 上传前运行一次 `python installer/install.py --target <测试项目> --dry-run`。
-- [ ] 上传后检查 README 首页显示是否正常。
+- [ ] 仓库 Description 与 README 定位一致，topics 覆盖 memory / mcp / claude-code / agent。
+- [ ] MIT License 在位。
+- [ ] 上传前跑全部自测脚本与一次 `--dry-run`、一次真实安装。
+- [ ] 上传后检查 README 双语渲染、文档相对链接可达。
 
 ## 8. 后续版本规划
 
-- [ ] v0.2：Memory governance。
-- [ ] v0.3：Project intelligence。
-- [ ] v0.4：Optional private backup。
+- [ ] v0.3：可选本地向量（sqlite-vec）+ RRF，内置召回评测集。
+- [ ] v0.4：Marketplace 打包、一行安装、导入导出。
+- [ ] v0.5：可选端到端加密私有备份。

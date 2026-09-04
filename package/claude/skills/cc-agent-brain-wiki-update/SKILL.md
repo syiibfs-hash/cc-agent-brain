@@ -7,6 +7,14 @@ description: Update the local Markdown Wiki with session notes, project updates,
 
 Use after meaningful conversations, project decisions, or task checkpoints.
 
+## How it relates to the engine
+
+Raw events (user prompts, assistant replies, tool calls) are captured
+automatically into the SQLite engine by hooks. This skill is for **curated,
+human-readable pages** — the Wiki is the detailed projection layer, not a
+transcript dump. Durable facts distilled from these pages belong in the engine
+via cc-agent-brain-memory-distill.
+
 ## Destinations
 
 - Session notes: `wiki/sessions/YYYY-MM-DD.md`
@@ -22,7 +30,7 @@ Use after meaningful conversations, project decisions, or task checkpoints.
 1. Prefer concise structured notes over full transcripts.
 2. Preserve important raw snippets only when useful.
 3. Link related pages.
-4. Mark memory candidates clearly.
+4. Mark memory candidates clearly so distillation can pick them up.
 5. Do not write secrets, tokens, passwords, or credentials.
 
 ## Minimal session note format

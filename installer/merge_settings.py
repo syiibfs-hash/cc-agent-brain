@@ -22,7 +22,10 @@ HOOKS_TO_ADD = {
         {"hooks": [{"type": "command", "command": "{python} .claude/hooks/cc-agent-brain/pre_compact_save.py"}]}
     ],
     "Stop": [
-        {"hooks": [{"type": "command", "command": "{python} .claude/hooks/cc-agent-brain/memory_audit.py --light"}]}
+        {"hooks": [
+            {"type": "command", "command": "{python} .claude/hooks/cc-agent-brain/transcript_capture.py"},
+            {"type": "command", "command": "{python} .claude/hooks/cc-agent-brain/memory_audit.py --light"},
+        ]}
     ],
 }
 

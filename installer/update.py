@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Update CC Agent Brain by re-running the installer.
 
-This is intentionally simple for v0.1. It delegates to install.py so the same
+This is intentionally simple. It delegates to install.py so the same
 safe merge rules are used.
 """
 
