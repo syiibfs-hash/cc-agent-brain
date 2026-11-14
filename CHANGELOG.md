@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- Upgrades overwrite CC Agent Brain framework files (`.claude/hooks/cc-agent-brain/**`, `.claude/skills/cc-agent-brain-*/**`, `.claude/agents/cc-agent-brain-*.md`) so an existing install receives the current engine.
+- `brain_store.py init` runs again when `brain.db` already exists, so `BrainStore._migrate()` is not skipped on upgrade.
+- `memory/`, `wiki/`, `private/`, user-edited templates, and `brain.db` are still never overwritten or deleted.
+
+### Added
+- The installer merges one local stdio MCP server, `cc-agent-brain`, into Claude Code `.mcp.json`, Cursor `.cursor/mcp.json`, and Codex `.codex/config.toml`. Other servers in those files are left in place.
+
 ## 0.2.0 — Local memory engine
 
 Theme: upgrade from prompt-based scaffold to a real local memory engine. Zero

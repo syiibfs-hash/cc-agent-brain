@@ -42,6 +42,75 @@ Claude Desktop / other stdio MCP clients (adjust the absolute paths):
 }
 ```
 
+## What the installer writes
+
+`installer/install.py` (and `update.py`, which only calls it) merges one
+stdio server named `cc-agent-brain` into three project files. Other servers
+in those files are left in place. JSON comments outside strings are accepted
+on read, and a URL such as `https://example.com` is left intact. The file is
+rewritten as plain JSON. A file that still does not parse is left untouched.
+
+The server selects `.cc-agent-brain/brain.db` from its process working
+directory. Codex sets `cwd` to the project. Claude Code and Cursor are given
+the same `serve-mcp` command; this installer does not add a `--db` argument,
+because the Claude Code stdio shape below has none.
+
+### Claude Code — project `.mcp.json`
+
+[Claude Code MCP](https://code.claude.com/docs/en/mcp) stores project servers
+in `.mcp.json`. A stdio entry is `command` plus `args`. Omitting `type` means
+stdio. An entry with `url` and no `type` is a configuration error, so the
+installer never writes a URL server.
+
+```json
+{
+  "mcpServers": {
+    "cc-agent-brain": {
+      "command": "python",
+      "args": ["/abs/path/to/project/.claude/hooks/cc-agent-brain/brain_store.py", "serve-mcp"]
+    }
+  }
+}
+```
+
+### Cursor — project `.cursor/mcp.json`
+
+[Cursor MCP](https://cursor.com/docs/mcp) reads project config from
+`.cursor/mcp.json`. The STDIO reference requires `type`, `command`, and
+`args`. Some overview examples omit `type`; the installer follows the STDIO
+reference and writes `"type": "stdio"`. The script path uses
+`${workspaceFolder}`, which Cursor resolves to the directory that contains
+`.cursor/mcp.json`. User-level `~/.cursor/mcp.json` is not written, because
+this database belongs to one project.
+
+```json
+{
+  "mcpServers": {
+    "cc-agent-brain": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["${workspaceFolder}/.claude/hooks/cc-agent-brain/brain_store.py", "serve-mcp"]
+    }
+  }
+}
+```
+
+### Codex — project `.codex/config.toml`
+
+The [Codex config sample](https://learn.chatgpt.com/docs/config-file/config-sample.md)
+shows `~/.codex/config.toml` and also a project-scoped `.codex/config.toml`.
+Project config is a higher layer than the user file and is loaded only for a
+trusted project. The installer writes the project file so this server stays
+with this project's database and the user file is not edited. The merge
+updates only `[mcp_servers.cc-agent-brain]`. It does not use JSON.
+
+```toml
+[mcp_servers.cc-agent-brain]
+command = "python"
+args = ["/abs/path/to/project/.claude/hooks/cc-agent-brain/brain_store.py", "serve-mcp"]
+cwd = "/abs/path/to/project"
+```
+
 ## Scope notes
 
 - The server is read/write by design; run it against a project DB for project

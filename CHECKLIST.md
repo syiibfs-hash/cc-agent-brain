@@ -18,10 +18,11 @@
 
 ## 3. 安装器检查
 
-- [ ] 不覆盖用户已有 `.claude/`，安装前备份 settings。
+- [ ] 不替换用户已有 `.claude/` 目录；升级覆盖 `hooks/cc-agent-brain/**`、`skills/cc-agent-brain-*/**`、`agents/cc-agent-brain-*.md`。不覆盖 memory/、wiki/、private/、已有模板与 brain.db。安装前备份 settings。
 - [ ] settings 只增量合并且重复安装不产生重复 hook。
 - [ ] 生成 `.cc-agent-brain/install-manifest.json`，版本号与 CHANGELOG 一致。
-- [ ] 安装时初始化 `.cc-agent-brain/brain.db`，manifest 记录 engine_state。
+- [ ] 安装和升级都执行 `brain_store.py --db <path> init`。新库的 `engine_state` 为 `initialized`，已有库为 `migrated`。
+- [ ] 合并 Claude Code `.mcp.json`、Cursor `.cursor/mcp.json`、Codex `.codex/config.toml`，只更新 `cc-agent-brain` 这一条。
 - [ ] 支持 `--dry-run`，预览不写盘。
 - [ ] 卸载只删框架文件，保留 memory/ wiki/ private/ 与 brain.db。
 

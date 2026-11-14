@@ -73,11 +73,18 @@ my-project/
 │       ├── transcript_capture.py             ← indexes assistant/tool actions
 │       └── …
 ├── .cc-agent-brain/brain.db                  ← local engine DB (git-ignored)
+├── .mcp.json                                 ← Claude Code stdio MCP, merged
+├── .cursor/mcp.json                          ← Cursor stdio MCP, merged
+├── .codex/config.toml                        ← Codex MCP table, merged
 ├── memory/     compressed long-term memory + generated index
 ├── wiki/       detailed human-readable context
 ├── private/    local sensitive notes
 └── templates/  writing templates
 ```
+
+Running the installer again refreshes the namespaced hooks, skills, and agents,
+migrates an existing `brain.db`, and merges the three MCP entries. It does not
+overwrite `memory/`, `wiki/`, `private/`, existing templates, or the database file.
 
 ### The engine CLI
 
@@ -204,11 +211,16 @@ my-project/
 │       ├── transcript_capture.py             ← 索引助手回复/工具动作
 │       └── …
 ├── .cc-agent-brain/brain.db                  ← 本地引擎库（git 忽略）
+├── .mcp.json                                 ← Claude Code stdio MCP，只合并本服务
+├── .cursor/mcp.json                          ← Cursor stdio MCP，只合并本服务
+├── .codex/config.toml                        ← Codex MCP 表，只合并本服务
 ├── memory/     压缩长期记忆 + 生成式索引
 ├── wiki/       详细的人类可读上下文
 ├── private/    本地敏感笔记
 └── templates/  写作模板
 ```
+
+再次运行安装器会刷新命名空间内的钩子、技能和代理，对已有 `brain.db` 做迁移，并合并上面三个 MCP 条目。它不会覆盖 `memory/`、`wiki/`、`private/`、已有模板或数据库文件本身。
 
 ### 引擎命令行
 
