@@ -47,4 +47,16 @@ Claude Desktop / other stdio MCP clients (adjust the absolute paths):
 - The server is read/write by design; run it against a project DB for project
   memory, or `--global` for the shared profile.
 - It stays local (stdio, no listening port), consistent with local-first.
-- Protocol version advertised: `2024-11-05`.
+- Dual-era protocol on the same stdio process:
+  - Legacy clients send `initialize` and receive `protocolVersion`
+    `2024-11-05`, `capabilities.tools`, and `serverInfo`.
+  - Modern clients (MCP `2026-07-28`) send `io.modelcontextprotocol/protocolVersion`
+    and `io.modelcontextprotocol/clientCapabilities` on each request. The
+    server implements `server/discover` and puts `resultType: "complete"` on
+    modern `tools/list` and `tools/call` results. A version other than
+    `2026-07-28` on that envelope returns JSON-RPC `-32022` with
+    `data.supported` and `data.requested`.
+  - Once a valid modern envelope has been seen, a later `initialize` is
+    rejected. Legacy clients that speak only `initialize` are unaffected.
+  - `serverInfo` in modern `_meta` uses the product version (`0.2.0`), not the
+    SQLite schema version.

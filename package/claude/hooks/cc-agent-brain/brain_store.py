@@ -14,6 +14,13 @@ Retrieval:
 Also exposes a minimal, dependency-free MCP (JSON-RPC over stdio) server:
   python brain_store.py serve-mcp
 
+The server is dual-era. A legacy client opens with initialize (protocol
+2024-11-05). A request whose params._meta carries both
+io.modelcontextprotocol/protocolVersion and
+io.modelcontextprotocol/clientCapabilities is served statelessly as
+2026-07-28 (server/discover, resultType). The memory engine underneath
+is unchanged.
+
 CLI commands emit JSON by default so hooks and skills can consume them.
 """
 
@@ -30,6 +37,23 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 SCHEMA_VERSION = "2"
+# Software version advertised in modern serverInfo. Distinct from the DB schema.
+PRODUCT_VERSION = "0.2.0"
+MCP_SERVER_NAME = "cc-agent-brain"
+MCP_LEGACY_PROTOCOL_VERSION = "2024-11-05"
+MCP_MODERN_PROTOCOL_VERSION = "2026-07-28"
+# Newest first. Legacy 2024-11-05 is reached via initialize, not via _meta.
+MCP_SUPPORTED_PROTOCOL_VERSIONS = (
+    MCP_MODERN_PROTOCOL_VERSION,
+    MCP_LEGACY_PROTOCOL_VERSION,
+)
+_MCP_PROTOCOL_VERSION_KEY = "io.modelcontextprotocol/protocolVersion"
+_MCP_CLIENT_CAPABILITIES_KEY = "io.modelcontextprotocol/clientCapabilities"
+_MCP_SERVER_INFO_KEY = "io.modelcontextprotocol/serverInfo"
+_MCP_UNSUPPORTED_PROTOCOL_VERSION = -32022
+# Freshness hint for the static tool catalog and discovery document.
+_MCP_TTL_MS = 3_600_000
+_MCP_CACHE_SCOPE = "public"
 MEMORY_LAYERS = ("working", "episodic", "semantic", "procedural")
 MEMORY_STATUSES = ("active", "superseded", "expired", "archived")
 CONFIDENCE_LEVELS = ("high", "medium", "low")
@@ -542,9 +566,194 @@ MCP_TOOLS = [
 ]
 
 
+class _McpEra:
+    """Per-stdio-process era. Modern confirmation is sticky.
+
+    A valid modern `_meta` envelope confirms the 2026-07-28 era. After that,
+    `initialize` is not served: the spec treats a modern result or
+    UnsupportedProtocolVersionError as proof the peer stays modern, and this
+    server must not fall back to the legacy handshake.
+    """
+
+    def __init__(self) -> None:
+        self.modern_confirmed = False
+
+
+def _mcp_server_info() -> Dict[str, str]:
+    return {"name": MCP_SERVER_NAME, "version": PRODUCT_VERSION}
+
+
+def _modern_result_meta() -> Dict[str, Any]:
+    return {_MCP_SERVER_INFO_KEY: _mcp_server_info()}
+
+
+def _mcp_params(msg: Dict[str, Any]) -> Dict[str, Any]:
+    params = msg.get("params")
+    if isinstance(params, dict):
+        return params
+    return {}
+
+
+def _classify_mcp_meta(meta: Any) -> str:
+    """Return 'modern', 'invalid', or 'legacy'.
+
+    Modern requires both envelope keys with the types from the 2026-07-28
+    schema (protocolVersion string, clientCapabilities object). A partial
+    envelope is legacy traffic: 2024-11-05 clients also use `_meta`, but not
+    these keys. Both keys present with the wrong types is an attempted modern
+    envelope and is rejected rather than reinterpreted as `initialize`.
+    """
+    if not isinstance(meta, dict):
+        return "legacy"
+    has_version = _MCP_PROTOCOL_VERSION_KEY in meta
+    has_caps = _MCP_CLIENT_CAPABILITIES_KEY in meta
+    if not has_version or not has_caps:
+        return "legacy"
+    version = meta[_MCP_PROTOCOL_VERSION_KEY]
+    caps = meta[_MCP_CLIENT_CAPABILITIES_KEY]
+    if isinstance(version, str) and isinstance(caps, dict):
+        return "modern"
+    return "invalid"
+
+
+def _jsonrpc_result(mid: Any, result: Dict[str, Any]) -> Dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": mid, "result": result}
+
+
+def _jsonrpc_error(mid: Any, code: int, message: str, data: Any = None) -> Dict[str, Any]:
+    error: Dict[str, Any] = {"code": code, "message": message}
+    if data is not None:
+        error["data"] = data
+    return {"jsonrpc": "2.0", "id": mid, "error": error}
+
+
+def _unsupported_protocol_version(mid: Any, requested: str) -> Dict[str, Any]:
+    return _jsonrpc_error(
+        mid,
+        _MCP_UNSUPPORTED_PROTOCOL_VERSION,
+        "Unsupported protocol version",
+        {
+            "supported": list(MCP_SUPPORTED_PROTOCOL_VERSIONS),
+            "requested": requested,
+        },
+    )
+
+
+def _legacy_initialize_result() -> Dict[str, Any]:
+    # Keep the historical serverInfo.version (schema id "2") so existing
+    # 2024-11-05 clients see the same initialize payload. Modern `_meta`
+    # uses PRODUCT_VERSION instead.
+    return {
+        "protocolVersion": MCP_LEGACY_PROTOCOL_VERSION,
+        "capabilities": {"tools": {}},
+        "serverInfo": {"name": MCP_SERVER_NAME, "version": SCHEMA_VERSION},
+    }
+
+
+def _discover_result() -> Dict[str, Any]:
+    return {
+        "resultType": "complete",
+        "supportedVersions": list(MCP_SUPPORTED_PROTOCOL_VERSIONS),
+        "capabilities": {"tools": {}},
+        "_meta": _modern_result_meta(),
+        "instructions": (
+            "Local CC Agent Brain memory stored in SQLite. "
+            "Use the brain_* tools to search, add, expire, and review memories."
+        ),
+        "ttlMs": _MCP_TTL_MS,
+        "cacheScope": _MCP_CACHE_SCOPE,
+    }
+
+
+def _modern_tools_list() -> Dict[str, Any]:
+    # MCP_TOOLS is a fixed literal; that order is the stable tools/list order.
+    return {
+        "resultType": "complete",
+        "tools": MCP_TOOLS,
+        "_meta": _modern_result_meta(),
+        "ttlMs": _MCP_TTL_MS,
+        "cacheScope": _MCP_CACHE_SCOPE,
+    }
+
+
+def _modernize_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(result)
+    out["resultType"] = "complete"
+    meta = dict(out.get("_meta") or {})
+    meta.update(_modern_result_meta())
+    out["_meta"] = meta
+    return out
+
+
+def dispatch_mcp(store: "BrainStore", msg: Dict[str, Any], era: _McpEra) -> Optional[Dict[str, Any]]:
+    """Handle one JSON-RPC message. Notifications return None."""
+    if "id" not in msg:
+        return None
+    mid = msg["id"]
+    method = msg.get("method")
+    params = _mcp_params(msg)
+    meta = params.get("_meta") if params else None
+    # params may be {} when the message omitted params; meta then stays absent.
+    if "params" in msg and not isinstance(msg.get("params"), dict):
+        meta = None
+    status = _classify_mcp_meta(meta)
+
+    if status == "invalid":
+        return _jsonrpc_error(
+            mid,
+            -32602,
+            "invalid _meta: io.modelcontextprotocol/protocolVersion must be a string "
+            "and io.modelcontextprotocol/clientCapabilities must be an object",
+        )
+
+    if status == "modern":
+        era.modern_confirmed = True
+        if not isinstance(meta, dict):
+            return _jsonrpc_error(mid, -32602, "invalid _meta envelope")
+        requested = meta[_MCP_PROTOCOL_VERSION_KEY]
+        if requested != MCP_MODERN_PROTOCOL_VERSION:
+            return _unsupported_protocol_version(mid, requested)
+        try:
+            if method == "server/discover":
+                result = _discover_result()
+            elif method == "tools/list":
+                result = _modern_tools_list()
+            elif method == "tools/call":
+                result = _modernize_result(_handle_mcp_call(store, params))
+            else:
+                # initialize and ping were removed in 2026-07-28. Do not answer
+                # them with the legacy payloads once this request is modern.
+                return _jsonrpc_error(mid, -32601, f"method not found: {method}")
+            return _jsonrpc_result(mid, result)
+        except Exception as exc:  # never kill the transport on a bad call
+            return _jsonrpc_error(mid, -32000, str(exc))
+
+    if method == "initialize":
+        if era.modern_confirmed:
+            requested = params.get("protocolVersion")
+            if not isinstance(requested, str):
+                requested = ""
+            return _unsupported_protocol_version(mid, requested)
+        return _jsonrpc_result(mid, _legacy_initialize_result())
+
+    try:
+        if method == "ping":
+            result: Dict[str, Any] = {}
+        elif method == "tools/list":
+            result = {"tools": MCP_TOOLS}
+        elif method == "tools/call":
+            result = _handle_mcp_call(store, params)
+        else:
+            return _jsonrpc_error(mid, -32601, f"method not found: {method}")
+        return _jsonrpc_result(mid, result)
+    except Exception as exc:  # never kill the transport on a bad call
+        return _jsonrpc_error(mid, -32000, str(exc))
+
+
 def serve_mcp(db_path: Path) -> int:
     store = BrainStore(db_path)
     out = sys.stdout
+    era = _McpEra()
 
     def send(obj: Dict[str, Any]) -> None:
         out.write(json.dumps(obj, ensure_ascii=False) + "\n")
@@ -558,31 +767,11 @@ def serve_mcp(db_path: Path) -> int:
             msg = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if not isinstance(msg, dict) or "id" not in msg:
-            # notifications (e.g. initialized) get no response.
+        if not isinstance(msg, dict):
             continue
-        method = msg.get("method")
-        mid = msg["id"]
-        params = msg.get("params") or {}
-        try:
-            if method == "initialize":
-                result = {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "cc-agent-brain", "version": SCHEMA_VERSION},
-                }
-            elif method == "ping":
-                result = {}
-            elif method == "tools/list":
-                result = {"tools": MCP_TOOLS}
-            elif method == "tools/call":
-                result = _handle_mcp_call(store, params)
-            else:
-                send({"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": f"method not found: {method}"}})
-                continue
-            send({"jsonrpc": "2.0", "id": mid, "result": result})
-        except Exception as exc:  # never kill the transport on a bad call
-            send({"jsonrpc": "2.0", "id": mid, "error": {"code": -32000, "message": str(exc)}})
+        response = dispatch_mcp(store, msg, era)
+        if response is not None:
+            send(response)
     store.close()
     return 0
 
