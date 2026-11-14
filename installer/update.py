@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Update CC Agent Brain by re-running the installer.
 
-This is intentionally simple. It delegates to install.py so the same
-safe merge rules are used.
+install.py refreshes framework files, migrates an existing brain.db, and
+merges the Claude Code, Cursor, and Codex MCP entries. User memory, wiki,
+private data, templates, and the database file stay in place. This wrapper
+does not add a second copy path.
 """
 
 from __future__ import annotations
