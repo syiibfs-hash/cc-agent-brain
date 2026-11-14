@@ -1,70 +1,110 @@
 # Architecture
 
-CC Agent Brain is an installable, local-first add-on that gives coding agents
-a durable, retrievable memory. It never replaces `.claude/`.
+CC Agent Brain is an installable add-on that stores Claude Code session text
+in a local SQLite file and can print keyword matches back into Claude Code.
+It merges files under the `cc-agent-brain` namespace and does not replace
+`.claude/`.
 
-## Main flow
+## What runs today
 
 ```text
-user prompt / assistant reply / tool action
-        ↓ (hooks, automatic)
-append-only event stream (SQLite)  +  human-readable Wiki (Markdown)
-        ↓ (distill skill / curator agent)
-versioned long-term memories (bi-temporal, layered)
-        ↓ (FTS5/BM25 + RRF; project DB first, global DB fallback)
-automatic recall injected into future sessions
-        ↓ optional
-MCP server: the same memory for any MCP-compatible client
+Claude Code hooks only
+        ↓
+append-only events (SQLite) + Markdown notes under wiki/ and memory/
+        ↓
+long-term memory rows only after an explicit `memory add`
+        ↓
+FTS5 bm25() lists fused with RRF (lexical paths only)
+        ↓
+Claude Code UserPromptSubmit hook prints those hits
+        ↓
+optional stdio process: MCP 2024-11-05 via initialize, and 2026-07-28 via _meta
 ```
+
+## Current limits
+
+- Auto-capture is the Claude Code hook set below. This repository has no
+  Cursor, Codex, Gemini CLI, or Claude Desktop capture integration.
+- RRF fuses FTS lists (project memories, project events, and the global file's
+  memories and events when `~/.cc-agent-brain/brain.db` exists). It does not
+  fuse a vector ranker. No vector index is built or queried.
+- Memory rows store `valid_from`, `valid_to`, `created_at`, and `updated_at`.
+  Search returns `status='active'` rows. There is no as-of query.
+- `serve-mcp` speaks both MCP eras on one stdio process. `initialize` still
+  returns protocol `2024-11-05`. A `params._meta` envelope with both
+  `io.modelcontextprotocol/protocolVersion` and
+  `io.modelcontextprotocol/clientCapabilities` speaks `2026-07-28`
+  (`server/discover`, `resultType`, `_meta`). See `docs/mcp.md`. That
+  handshake does not capture Cursor, Codex, or other clients.
+- `installer/update.py` re-runs `install.py`. A second run overwrites the
+  namespaced hooks, skills, and agents, leaves `brain.db`, `memory/`, `wiki/`,
+  `private/`, and existing templates in place, and merges Claude Code, Cursor,
+  and Codex MCP entries that launch the same `serve-mcp`. That is not a
+  shared multi-agent memory service.
+- Hooks write the project DB of the current working directory. There is no
+  shared multi-agent memory service. The optional global DB is only included
+  by `search` when that file already exists.
 
 ## Layers
 
 ### 1. Installer layer
 
-`installer/` merges skills, agents, hooks and templates into an existing
-project without replacing `.claude/`, backs up settings, records a manifest,
-and initializes the engine database.
+`installer/install.py` overwrites namespaced hooks, skills, and agents, and
+copies templates only when the destination is missing. It backs up
+`.claude/settings.json` once, merges Claude Code hook entries, writes
+`.cc-agent-brain/install-manifest.json`, and runs `brain_store.py init` even
+when `brain.db` already exists. It also merges one stdio MCP server into
+`.mcp.json`, `.cursor/mcp.json`, and `.codex/config.toml`.
+`installer/update.py` is that same script invoked again.
 
-### 2. Capture layer (hooks)
+### 2. Capture layer (Claude Code hooks)
 
-| Hook | Event | Responsibility |
-|------|-------|----------------|
+| Hook | Claude Code event | Responsibility |
+|------|-------------------|----------------|
 | `session_start.py` | SessionStart | onboarding check + engine stats |
-| `prompt_capture.py` | UserPromptSubmit | user prompt → Markdown projection + event stream |
-| `wiki_context_hint.py` | UserPromptSubmit | real FTS recall against the prompt |
-| `transcript_capture.py` | Stop | index assistant replies & tool calls from the transcript (idempotent) |
-| `pre_compact_save.py` | PreCompact | checkpoint before compaction |
-| `memory_audit.py` | Stop | SQL audit: duplicates, broken chains, stale entries |
+| `prompt_capture.py` | UserPromptSubmit | user prompt → Markdown session note + event |
+| `wiki_context_hint.py` | UserPromptSubmit | FTS recall printed for Claude Code |
+| `transcript_capture.py` | Stop | assistant text and `tool_use` inputs from the Claude Code transcript JSONL (idempotent). Tool results are skipped |
+| `pre_compact_save.py` | PreCompact | marker file + system event. The conversation body is not copied |
+| `memory_audit.py` | Stop | SQL audit: duplicate active rows, broken supersede links, stale rows |
+
+Nothing here calls `memory add`. Distillation is a skill the agent runs later.
 
 ### 3. Engine layer (`brain_store.py`)
 
-Zero third-party dependencies (Python stdlib only):
+Python standard library only:
 
-- SQLite tables `events` / `memories` with FTS5 virtual tables (BM25 ranking).
-- CJK-bigram tokenizer so Chinese/English retrieval both work without a model.
-- Versioned memories: layer, status, valid_from/valid_to, supersedes chain.
-- Capture-time secret redaction.
-- RRF fusion helper reserved for an optional vector channel.
-- Dependency-free MCP server (`serve-mcp`, JSON-RPC over stdio).
+- Tables `events` and `memories`, plus FTS5 virtual tables ranked with `bm25()`.
+- CJK-bigram tokenizer shared by indexing and queries.
+- Memory status lifecycle: `active` / `superseded` / `expired` / `archived`,
+  with `valid_from` / `valid_to` stored on the row. Search does not evaluate
+  those timestamps.
+- Capture-time secret redaction (pattern replacement).
+- `rrf_fuse` over the lexical lists described above.
+- `serve-mcp`: newline-delimited JSON-RPC. Legacy `initialize` returns
+  protocol `2024-11-05`. Modern `_meta` requests at `2026-07-28` use
+  `server/discover` and put `serverInfo` version `0.2.0` in `_meta`.
 
-### 4. Skill / Agent layer
+### 4. Skill / agent layer
 
-Skills define reusable workflows (onboard, wiki update/search, distill, audit,
-material distill); agents handle curation, compilation and material extraction
-through the engine CLI.
+Skills are instructions for Claude Code (onboard, wiki update/search, distill,
+audit, material distill). Agents are curator, compiler, and material
+extractor prompts. They call the engine CLI. They are not other products'
+auto-capture.
 
-### 5. Knowledge layer
+### 5. Files
 
-- `.cc-agent-brain/brain.db` — structured project store (git-ignored).
-- `~/.cc-agent-brain/brain.db` — optional global identity/preferences store.
-- `wiki/` — detailed, human-readable context.
-- `memory/` — compressed Markdown memory + generated engine projection.
-- `private/` — local-only sensitive notes.
+- `.cc-agent-brain/brain.db` — project store written by the hooks (git-ignored).
+- `~/.cc-agent-brain/brain.db` — optional second file. Hooks do not create it.
+- `wiki/` — notes, including raw prompt copies from `prompt_capture.py`.
+- `memory/` — Markdown the onboarding skill fills, plus `sync-md` output.
+- `private/` — local notes. The engine does not read this directory by itself.
 
-## Design constraints
+## Design constraints that the code follows
 
-- Local-first: nothing leaves the machine; no cloud account, no telemetry.
-- Markdown remains the human-readable projection; SQLite is the index of record.
-- Hooks never block the user: engine failures degrade silently.
-- History is append-only and auditable; facts are superseded/expired, never
-  silently rewritten.
+- Hook failures are swallowed. `_utils.brain_cli` returns `None` on error and
+  the hooks still exit 0.
+- Events are insert-only. A changed long-term fact is a new memory row;
+  supersede/expire updates the old row's status and `valid_to` and drops it
+  from `memories_fts`.
+- The process does not open sockets. MCP is stdio.

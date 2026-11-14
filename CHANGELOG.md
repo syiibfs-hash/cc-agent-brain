@@ -18,15 +18,22 @@ third-party dependencies added (Python stdlib only).
 ### Added
 - `brain_store.py`: SQLite + FTS5 (BM25) engine with CJK bigram tokenization,
   covering events, versioned memories, retrieval, audit, stats and timeline.
-- Four-layer memory model (working / episodic / semantic / procedural) with
-  bi-temporal validity and supersede/expire lifecycle (history retained).
-- `transcript_capture.py` Stop hook: indexes assistant replies and tool calls
-  from the Claude Code transcript, idempotent via a cursor file.
+- Four-layer memory columns (working / episodic / semantic / procedural) with
+  `valid_from` / `valid_to` stored on the row, plus supersede/expire (old row
+  kept). Search has no as-of / time-travel query.
+- `transcript_capture.py` Stop hook: indexes Claude Code assistant text and
+  `tool_use` inputs from the transcript, idempotent via a cursor file. Tool
+  results are skipped. Capture hooks are Claude Code only.
 - Capture-time secret redaction (OpenAI/Anthropic/GitHub/AWS/Google keys, JWT,
   Bearer, PEM, credential assignments).
-- Reciprocal Rank Fusion helper, with project-DB-first / global-DB fallback.
+- Reciprocal Rank Fusion of lexical FTS lists (memories, events, and the
+  global DB's lists when that file exists). Not lexical-plus-vector hybrid
+  retrieval.
 - Dependency-free MCP server (`serve-mcp`, JSON-RPC over stdio) exposing
-  brain_search / brain_add_memory / brain_forget / brain_timeline / brain_stats.
+  brain_search / brain_add_memory / brain_forget / brain_timeline /
+  brain_stats. The original 0.2.0 engine spoke `initialize` / `ping` /
+  `tools/list` / `tools/call` at protocol `2024-11-05`. Current master also
+  speaks `2026-07-28`; see the note below.
 - `sync-md` generates `memory/brain-index.generated.md` projection.
 - Installer initializes the engine DB and records `engine_state`; docs:
   memory-engine.md, mcp.md, product-analysis.md.
@@ -42,6 +49,25 @@ third-party dependencies added (Python stdlib only).
 ### Notes
 - Personal `memory/`, `wiki/`, `private/` and `*.db` remain git-ignored and are
   never removed by the uninstaller.
+- The original 0.2.0 installer skipped framework files that already existed.
+  That behavior is no longer what `install.py` does. See Unreleased.
+- Documentation after 0.2.0 was corrected to the capture, retrieval, and
+  as-of limits above. Vector search, as-of queries, and a shared multi-agent
+  memory service are still absent.
+- Master commit `6208cd3` (not a new tag and not a GitHub Release) teaches the
+  same `serve-mcp` process a second era. `initialize` still returns
+  `2024-11-05` with `serverInfo.version` `"2"`. A `params._meta` envelope
+  carrying both `io.modelcontextprotocol/protocolVersion` and
+  `io.modelcontextprotocol/clientCapabilities`, with version `2026-07-28`,
+  handles `server/discover`, `tools/list`, and `tools/call`, and puts product
+  version `0.2.0` in `_meta["io.modelcontextprotocol/serverInfo"]`. Another
+  version string on that envelope returns JSON-RPC `-32022`. `PRODUCT_VERSION`
+  stays `0.2.0`.
+- Master commit `facc0db` (not a new tag and not a GitHub Release) makes a
+  second install overwrite namespaced framework files, run `init` against an
+  existing `brain.db`, and merge Claude Code, Cursor, and Codex MCP entries
+  for that `serve-mcp`. `memory/`, `wiki/`, `private/`, existing templates,
+  and the database file stay.
 
 ## 0.1.0
 

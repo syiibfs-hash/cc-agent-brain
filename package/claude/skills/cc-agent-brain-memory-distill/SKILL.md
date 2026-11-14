@@ -40,7 +40,8 @@ Layers:
 
 When a new fact replaces an old one, write the new memory with `--supersedes <old-id>`.
 The old memory is kept as `superseded` with `valid_to` set, and leaves active
-retrieval — this preserves an auditable history instead of silently rewriting.
+retrieval. `timeline` and `memory list` can show that row. `search` has no
+as-of argument and cannot return the store as of a past time.
 
 When a fact is simply no longer true, expire it:
 
