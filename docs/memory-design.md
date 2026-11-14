@@ -35,7 +35,11 @@ old row stays, status changes, valid_to is set, row leaves memories_fts
 - `confidence`: `high` / `medium` / `low`
 - `status`: `active` / `superseded` / `expired` / `archived`
 - `valid_from`, `valid_to` — set at insert and when the row leaves active status
-- `source`, `supersedes`
+- `source`, `writer`, `supersedes`
+- `writer` is the caller-supplied identity for that insert (`--writer`, else
+  `CC_AGENT_BRAIN_WRITER`, else `unspecified`). Hooks pass `claude-code` when
+  the environment variable is unset. The engine does not detect which MCP
+  client connected. `source` remains provenance, separate from `writer`.
 - `created_at`, `updated_at`
 
 `valid_from` is the insert timestamp. `valid_to` stays null while the row is
@@ -68,9 +72,11 @@ row by id shows stored columns. `search` applies `status='active'` and ignores
 ## Retrieval
 
 1. `search` ranks active memories and events with FTS5 `bm25()`, then fuses
-   those lexical lists with RRF. When `~/.cc-agent-brain/brain.db` exists and
-   is a different file, its memory and event lists are fused in the same call.
-   There is no vector list.
+   those lexical lists with RRF. When the global `brain.db` exists and is a
+   different file, its memory and event lists are fused in the same call.
+   The global directory is `CC_AGENT_BRAIN_GLOBAL_DIR` or `--global-dir`,
+   otherwise `~/.cc-agent-brain`. There is no vector list. Hits include the
+   stored `writer`.
 2. The wiki-search skill then tells the agent to open Markdown files in a
    fixed order if the engine output is not enough.
 3. The skill text says to report a miss instead of inventing a past decision.

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+# Claude Code hooks are this code path. Other clients are not inferred.
+HOOK_WRITER = "claude-code"
+WRITER_ENV = "CC_AGENT_BRAIN_WRITER"
 
 HOOK_DIR = Path(__file__).resolve().parent
 BRAIN_SCRIPT = HOOK_DIR / "brain_store.py"
@@ -61,8 +66,28 @@ def brain_cli(args: List[str], stdin_text: Optional[str] = None, timeout: float 
         return out
 
 
-def brain_event(kind: str, content: str, tags: Optional[List[str]] = None, source: str = "hook") -> Optional[Any]:
-    args = ["event", "--kind", kind, "--content", content, "--source", source]
+def hook_writer(explicit: Optional[str] = None) -> str:
+    """Identity these Claude Code hooks record.
+
+    An explicit value wins, then ``CC_AGENT_BRAIN_WRITER``, then ``claude-code``.
+    The last one names this hook code path. It is not a guess about Cursor or Codex.
+    """
+    if explicit is not None and str(explicit).strip():
+        return " ".join(str(explicit).split())
+    env = os.environ.get(WRITER_ENV, "").strip()
+    if env:
+        return " ".join(env.split())
+    return HOOK_WRITER
+
+
+def brain_event(
+    kind: str,
+    content: str,
+    tags: Optional[List[str]] = None,
+    source: str = "hook",
+    writer: Optional[str] = None,
+) -> Optional[Any]:
+    args = ["event", "--kind", kind, "--content", content, "--source", source, "--writer", hook_writer(writer)]
     if tags:
         args += ["--tags", ",".join(tags)]
     return brain_cli(args)

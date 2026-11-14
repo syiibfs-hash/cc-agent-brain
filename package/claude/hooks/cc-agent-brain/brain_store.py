@@ -6,10 +6,18 @@ Storage:
   memories  versioned long-term memory with bi-temporal validity and status
 
 Retrieval:
-  SQLite FTS5 (BM25) over events and memories, project DB first and the
-  optional global DB (~/.cc-agent-brain/brain.db) as fallback. A pure RRF
-  fusion helper is provided so an optional vector channel can be plugged in
-  later without changing call sites.
+  SQLite FTS5 (BM25) over events and memories. Search reads the database it
+  opened, and also fuses the global library when that file exists and is a
+  different file. A pure RRF fusion helper is provided so an optional vector
+  channel can be plugged in later without changing call sites.
+
+Shared library (one machine, many MCP clients):
+  ~/.cc-agent-brain/brain.db and ~/.cc-agent-brain/library.md, unless
+  CC_AGENT_BRAIN_GLOBAL_DIR or --global-dir names another directory.
+  Project .cc-agent-brain/brain.db stays the project store. Writes store a
+  caller-supplied writer (else CC_AGENT_BRAIN_WRITER, else "unspecified").
+  library.md is rebuilt from active memories and from event counts. Event
+  text is not copied into that file.
 
 Also exposes a minimal, dependency-free MCP (JSON-RPC over stdio) server:
   python brain_store.py serve-mcp
@@ -29,6 +37,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -58,10 +67,46 @@ MEMORY_LAYERS = ("working", "episodic", "semantic", "procedural")
 MEMORY_STATUSES = ("active", "superseded", "expired", "archived")
 CONFIDENCE_LEVELS = ("high", "medium", "low")
 EVENT_KINDS = ("user", "assistant", "tool", "system")
+# Directory of the shared on-disk library. The project DB is not this path.
+GLOBAL_DIR_ENV = "CC_AGENT_BRAIN_GLOBAL_DIR"
+# Identity recorded on a write when the caller does not pass one.
+WRITER_ENV = "CC_AGENT_BRAIN_WRITER"
+DEFAULT_WRITER = "unspecified"
+GLOBAL_DB_NAME = "brain.db"
+GLOBAL_MARKDOWN_NAME = "library.md"
+# Set by --global-dir for this process. Environment is the cross-process knob.
+_global_dir_override: Optional[Path] = None
 
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
+
+
+def set_global_library_dir(path: Optional[str]) -> None:
+    """Select the shared library directory for this process.
+
+    ``None`` clears the flag override. The environment variable still applies.
+    """
+    global _global_dir_override
+    if path and str(path).strip():
+        _global_dir_override = Path(str(path).strip()).expanduser().resolve()
+    else:
+        _global_dir_override = None
+
+
+def global_library_dir() -> Path:
+    """Directory that holds the shared SQLite file and library.md.
+
+    Precedence: ``--global-dir``, then ``CC_AGENT_BRAIN_GLOBAL_DIR``, then
+    ``~/.cc-agent-brain``. The default stays next to the historical global DB
+    so existing ``--global`` files and search fusion keep one location.
+    """
+    if _global_dir_override is not None:
+        return _global_dir_override
+    raw = os.environ.get(GLOBAL_DIR_ENV, "").strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return (Path.home() / ".cc-agent-brain").resolve()
 
 
 def project_db_path() -> Path:
@@ -69,15 +114,48 @@ def project_db_path() -> Path:
 
 
 def global_db_path() -> Path:
-    return Path.home() / ".cc-agent-brain" / "brain.db"
+    return global_library_dir() / GLOBAL_DB_NAME
+
+
+def global_markdown_path() -> Path:
+    return global_library_dir() / GLOBAL_MARKDOWN_NAME
 
 
 def resolve_db_path(global_db: bool = False, explicit: Optional[str] = None) -> Path:
+    """Pick the SQLite file for this command.
+
+    An explicit ``--db`` wins, including over ``--global``. ``--global`` opens
+    the shared library. Otherwise the project file under the working directory
+    is used.
+    """
     if explicit:
         return Path(explicit).expanduser().resolve()
     if global_db:
         return global_db_path()
     return project_db_path()
+
+
+def same_file(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return False
+
+
+def resolve_writer(explicit: Optional[str] = None) -> str:
+    """Writer recorded on a row.
+
+    An explicit caller value wins, then ``CC_AGENT_BRAIN_WRITER``, then
+    ``unspecified``. Nothing here inspects which product launched the process.
+    """
+    chosen = ""
+    if explicit is not None and str(explicit).strip():
+        chosen = str(explicit).strip()
+    else:
+        chosen = os.environ.get(WRITER_ENV, "").strip()
+    if not chosen:
+        chosen = DEFAULT_WRITER
+    return " ".join(chosen.split())
 
 
 def now_iso() -> str:
@@ -212,7 +290,8 @@ class BrainStore:
               tags TEXT DEFAULT '[]',
               source TEXT DEFAULT '',
               dedup_hash TEXT UNIQUE,
-              created_at TEXT NOT NULL
+              created_at TEXT NOT NULL,
+              writer TEXT NOT NULL DEFAULT ''
             );
             CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(content, tags, kind);
             CREATE TABLE IF NOT EXISTS memories(
@@ -230,7 +309,8 @@ class BrainStore:
               source TEXT DEFAULT '',
               supersedes TEXT,
               created_at TEXT NOT NULL,
-              updated_at TEXT NOT NULL
+              updated_at TEXT NOT NULL,
+              writer TEXT NOT NULL DEFAULT ''
             );
             CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(title, body, tags);
             CREATE INDEX IF NOT EXISTS idx_memories_status ON memories(status, layer);
@@ -238,7 +318,17 @@ class BrainStore:
             """
         )
         c.execute("INSERT OR IGNORE INTO meta(key, value) VALUES('schema_version', ?)", (SCHEMA_VERSION,))
+        # Additive column. SCHEMA_VERSION stays "2" because legacy initialize
+        # advertises that id in serverInfo.version. Existing rows keep ''.
+        self._ensure_column("events", "writer", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column("memories", "writer", "TEXT NOT NULL DEFAULT ''")
         c.commit()
+
+    def _ensure_column(self, table: str, name: str, declaration: str) -> None:
+        rows = self.conn.execute(f"PRAGMA table_info({table})").fetchall()
+        have = {row["name"] for row in rows}
+        if name not in have:
+            self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {declaration}")
 
     # ----- events ----------------------------------------------------------
 
@@ -246,7 +336,15 @@ class BrainStore:
     def _dedup_hash(kind: str, content: str, ts: str) -> str:
         return hashlib.sha1(f"{kind}|{ts}|{content}".encode("utf-8")).hexdigest()[:16]
 
-    def add_event(self, kind: str, content: str, tags: Optional[Sequence[str]] = None, source: str = "", redact_secrets: bool = True) -> int:
+    def add_event(
+        self,
+        kind: str,
+        content: str,
+        tags: Optional[Sequence[str]] = None,
+        source: str = "",
+        redact_secrets: bool = True,
+        writer: Optional[str] = None,
+    ) -> int:
         if kind not in EVENT_KINDS:
             raise ValueError(f"unknown event kind: {kind}")
         if redact_secrets:
@@ -257,9 +355,10 @@ class BrainStore:
         ts = now_iso()
         tags_json = json.dumps(list(tags or []), ensure_ascii=False)
         dedup = self._dedup_hash(kind, content, ts)
+        who = resolve_writer(writer)
         cur = self.conn.execute(
-            "INSERT OR IGNORE INTO events(ts, kind, content, tags, source, dedup_hash, created_at) VALUES(?,?,?,?,?,?,?)",
-            (ts, kind, content, tags_json, source, dedup, ts),
+            "INSERT OR IGNORE INTO events(ts, kind, content, tags, source, dedup_hash, created_at, writer) VALUES(?,?,?,?,?,?,?,?)",
+            (ts, kind, content, tags_json, source, dedup, ts, who),
         )
         if cur.lastrowid:
             self.conn.execute(
@@ -267,6 +366,7 @@ class BrainStore:
                 (cur.lastrowid, fts_index_text(content), fts_index_text(" ".join(tags or [])), kind),
             )
             self.conn.commit()
+            self.maintain_shared_markdown()
             return int(cur.lastrowid)
         return -1
 
@@ -287,6 +387,7 @@ class BrainStore:
         scope: str = "project",
         supersedes: Optional[str] = None,
         redact_secrets: bool = True,
+        writer: Optional[str] = None,
     ) -> Dict[str, Any]:
         if layer not in MEMORY_LAYERS:
             raise ValueError(f"layer must be one of {MEMORY_LAYERS}")
@@ -297,11 +398,12 @@ class BrainStore:
         mid = self.new_memory_id(title, body)
         ts = now_iso()
         tags_json = json.dumps(list(tags or []), ensure_ascii=False)
+        who = resolve_writer(writer)
         cur = self.conn.execute(
             """INSERT INTO memories(id, layer, scope, title, body, tags, confidence, status,
-               valid_from, valid_to, source, supersedes, created_at, updated_at)
-               VALUES(?,?,?,?,?,?,?, 'active', ?, NULL, ?, ?, ?, ?)""",
-            (mid, layer, scope, title, body, tags_json, confidence, ts, source, supersedes, ts, ts),
+               valid_from, valid_to, source, supersedes, created_at, updated_at, writer)
+               VALUES(?,?,?,?,?,?,?, 'active', ?, NULL, ?, ?, ?, ?, ?)""",
+            (mid, layer, scope, title, body, tags_json, confidence, ts, source, supersedes, ts, ts, who),
         )
         seq = cur.lastrowid
         self.conn.execute(
@@ -311,6 +413,7 @@ class BrainStore:
         if supersedes:
             self._set_status(supersedes, "superseded", valid_to=ts)
         self.conn.commit()
+        self.maintain_shared_markdown()
         return self.get_memory(mid)
 
     def _set_status(self, mid: str, status: str, valid_to: Optional[str] = None) -> bool:
@@ -326,6 +429,7 @@ class BrainStore:
         # Non-active memories must leave the active FTS index.
         self.conn.execute("DELETE FROM memories_fts WHERE rowid=?", (row["seq"],))
         self.conn.commit()
+        self.maintain_shared_markdown()
         return True
 
     def expire_memory(self, mid: str) -> bool:
@@ -399,7 +503,7 @@ class BrainStore:
         lists = [mem_hits, evt_hits]
         if include_global:
             gpath = global_db_path()
-            if gpath.exists() and gpath.resolve() != self.db_path.resolve():
+            if gpath.exists() and not same_file(gpath, self.db_path):
                 g = BrainStore(gpath)
                 try:
                     lists.append(g._search_memories(match, k * 2, layer))
@@ -475,12 +579,14 @@ class BrainStore:
             "events_by_kind": group("events", "kind"),
             "memories_by_layer": group("memories", "layer"),
             "memories_by_status": group("memories", "status"),
+            "events_by_writer": group("events", "writer"),
+            "memories_by_writer": group("memories", "writer"),
             "events_span": {"first": bounds["a"], "last": bounds["b"]},
         }
 
     def timeline(self, limit: int = 15) -> List[Dict[str, Any]]:
         rows = self.conn.execute(
-            "SELECT id, layer, title, status, confidence, valid_from, valid_to, supersedes, source, updated_at "
+            "SELECT id, layer, title, status, confidence, valid_from, valid_to, supersedes, source, writer, updated_at "
             "FROM memories ORDER BY updated_at DESC LIMIT ?",
             (limit,),
         ).fetchall()
@@ -507,11 +613,84 @@ class BrainStore:
                 tags = json.loads(r["tags"]) if r["tags"] else []
                 tag_text = f" [{', '.join(tags)}]" if tags else ""
                 lines.append(f"### {r['title']}{tag_text}")
-                lines.append(f"- id: {r['id']} · confidence: {r['confidence']} · from: {r['valid_from']} · source: {r['source'] or 'n/a'}")
+                lines.append(
+                    f"- id: {r['id']} · confidence: {r['confidence']} · from: {r['valid_from']} · "
+                    f"source: {r['source'] or 'n/a'} · writer: {r.get('writer') or 'n/a'}"
+                )
                 lines.append("")
                 lines.append(r["body"])
                 lines.append("")
         return "\n".join(lines)
+
+    def is_global_library(self) -> bool:
+        return same_file(self.db_path, global_db_path())
+
+    def export_library_markdown(self) -> str:
+        """Living shared document. Active memories are included. Event text is not."""
+        stats = self.stats()
+        lines = [
+            "<!-- AUTO-GENERATED by brain_store.py from the shared global library. Do not edit by hand. -->",
+            f"<!-- generated: {now_iso()} -->",
+            "# Shared library",
+            "",
+            "Maintained from the global memory store on this machine.",
+            "Active memories are included. Event text is not copied into this document.",
+            "",
+            "## Active memories",
+            "",
+        ]
+        any_memory = False
+        for layer in MEMORY_LAYERS:
+            rows = self.list_memories(status="active", layer=layer)
+            if not rows:
+                continue
+            any_memory = True
+            lines.append(f"### {layer}")
+            lines.append("")
+            for r in rows:
+                tags = json.loads(r["tags"]) if r["tags"] else []
+                tag_text = f" [{', '.join(tags)}]" if tags else ""
+                lines.append(f"#### {r['title']}{tag_text}")
+                lines.append(
+                    f"- id: {r['id']} · confidence: {r['confidence']} · from: {r['valid_from']} · "
+                    f"source: {r['source'] or 'n/a'} · writer: {r.get('writer') or 'n/a'}"
+                )
+                lines.append("")
+                lines.append(r["body"])
+                lines.append("")
+        if not any_memory:
+            lines.append("No active memories.")
+            lines.append("")
+        lines.append("## Activity")
+        lines.append("")
+        lines.append("Counts only. Raw event text stays in SQLite.")
+        lines.append("")
+        lines.append(f"- events: {stats['events_total']}")
+        lines.append(f"- events by kind: {_format_counts(stats['events_by_kind'])}")
+        lines.append(f"- events by writer: {_format_counts(stats['events_by_writer'])}")
+        lines.append(f"- memories: {stats['memories_total']} ({stats['memories_active']} active)")
+        lines.append(f"- memories by writer: {_format_counts(stats['memories_by_writer'])}")
+        lines.append("")
+        return "\n".join(lines)
+
+    def maintain_shared_markdown(self) -> Optional[Path]:
+        """Rewrite library.md when this connection is the shared global DB."""
+        if not self.is_global_library():
+            return None
+        target = global_markdown_path()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(self.export_library_markdown(), encoding="utf-8")
+        return target
+
+
+def _format_counts(counts: Dict[str, int]) -> str:
+    if not counts:
+        return "none"
+    parts = []
+    for key in sorted(counts, key=lambda item: (item is None, str(item))):
+        label = key if key else "(none)"
+        parts.append(f"{label} {counts[key]}")
+    return ", ".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -534,7 +713,7 @@ MCP_TOOLS = [
     },
     {
         "name": "brain_add_memory",
-        "description": "Persist a stable, compressed long-term memory with layer/confidence/tags.",
+        "description": "Persist a stable, compressed long-term memory with layer/confidence/tags. writer is the caller-supplied identity stored on the row.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -544,6 +723,7 @@ MCP_TOOLS = [
                 "confidence": {"type": "string", "enum": list(CONFIDENCE_LEVELS), "default": "medium"},
                 "tags": {"type": "array", "items": {"type": "string"}},
                 "source": {"type": "string"},
+                "writer": {"type": "string"},
             },
             "required": ["title", "body"],
         },
@@ -793,6 +973,7 @@ def _handle_mcp_call(store: BrainStore, params: Dict[str, Any]) -> Dict[str, Any
             confidence=args.get("confidence", "medium"),
             tags=args.get("tags") or [],
             source=args.get("source", "mcp"),
+            writer=args.get("writer"),
         )
     elif name == "brain_forget":
         payload = {"id": args["id"], "expired": store.expire_memory(args["id"])}
@@ -815,16 +996,18 @@ def render_human(hits: Sequence[Dict[str, Any]]) -> str:
         return ""
     lines = ["CC Agent Brain recall (local engine):"]
     for i, h in enumerate(hits, 1):
+        who = h.get("writer") or ""
+        who_bit = f" · writer {who}" if who else ""
         if h.get("_type") == "memory":
             snippet = (h.get("body") or "").strip().replace("\n", " ")
             if len(snippet) > 160:
                 snippet = snippet[:160] + "…"
-            lines.append(f"{i}. [memory/{h.get('layer')}] {h.get('title')} — {snippet} (id {h.get('id')})")
+            lines.append(f"{i}. [memory/{h.get('layer')}] {h.get('title')} — {snippet} (id {h.get('id')}{who_bit})")
         else:
             snippet = (h.get("content") or "").strip().replace("\n", " ")
             if len(snippet) > 140:
                 snippet = snippet[:140] + "…"
-            lines.append(f"{i}. [event/{h.get('kind')} {h.get('ts')}] {snippet}")
+            lines.append(f"{i}. [event/{h.get('kind')} {h.get('ts')}] {snippet}{who_bit}")
     return "\n".join(lines)
 
 
@@ -852,8 +1035,12 @@ def _print(obj: Any) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="CC Agent Brain local memory engine")
-    p.add_argument("--db", help="Explicit SQLite path (default: ./.cc-agent-brain/brain.db)")
-    p.add_argument("--global", dest="use_global", action="store_true", help="Use ~/.cc-agent-brain/brain.db")
+    p.add_argument("--db", help="Explicit SQLite path (default: ./.cc-agent-brain/brain.db). Wins over --global.")
+    p.add_argument("--global", dest="use_global", action="store_true", help="Use the shared global library (brain.db beside library.md)")
+    p.add_argument(
+        "--global-dir",
+        help="Shared library directory for this process (brain.db and library.md). Overrides CC_AGENT_BRAIN_GLOBAL_DIR.",
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("init")
@@ -864,6 +1051,7 @@ def build_parser() -> argparse.ArgumentParser:
     pe.add_argument("--content")
     pe.add_argument("--tags")
     pe.add_argument("--source", default="")
+    pe.add_argument("--writer", default=None, help="Caller identity. Default: CC_AGENT_BRAIN_WRITER or unspecified")
 
     pm = sub.add_parser("memory")
     msub = pm.add_subparsers(dest="mem_cmd", required=True)
@@ -874,6 +1062,7 @@ def build_parser() -> argparse.ArgumentParser:
     ma.add_argument("--confidence", default="medium", choices=CONFIDENCE_LEVELS)
     ma.add_argument("--tags")
     ma.add_argument("--source", default="")
+    ma.add_argument("--writer", default=None, help="Caller identity. Default: CC_AGENT_BRAIN_WRITER or unspecified")
     ma.add_argument("--scope", default="project", choices=("project", "global"))
     ma.add_argument("--supersedes")
     msub.add_parser("list")
@@ -902,6 +1091,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     sys.stdout.reconfigure(encoding="utf-8") if hasattr(sys.stdout, "reconfigure") else None
     args = build_parser().parse_args(argv)
+    set_global_library_dir(getattr(args, "global_dir", None))
     db_path = resolve_db_path(global_db=args.use_global, explicit=args.db)
 
     if args.cmd == "serve-mcp":
@@ -913,11 +1103,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     store = BrainStore(db_path)
     try:
         if args.cmd == "init":
-            _print({"ok": True, "db": str(db_path), "schema": SCHEMA_VERSION})
+            library_md = store.maintain_shared_markdown()
+            _print({"ok": True, "db": str(db_path), "schema": SCHEMA_VERSION, "library_md": str(library_md) if library_md else None})
         elif args.cmd == "stats":
             _print(store.stats())
         elif args.cmd == "event":
-            eid = store.add_event(args.kind, _read_content(args), tags=_tags(args.tags), source=args.source)
+            eid = store.add_event(
+                args.kind,
+                _read_content(args),
+                tags=_tags(args.tags),
+                source=args.source,
+                writer=args.writer,
+            )
             _print({"ok": eid >= 0, "event_id": eid})
         elif args.cmd == "memory":
             if args.mem_cmd == "add":
@@ -930,6 +1127,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     source=args.source,
                     scope=args.scope,
                     supersedes=args.supersedes,
+                    writer=args.writer,
                 )
                 _print({"ok": True, "memory": mem})
             elif args.mem_cmd == "list":
@@ -949,9 +1147,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         elif args.cmd == "timeline":
             _print(store.timeline(limit=args.limit))
         elif args.cmd == "sync-md":
-            target = Path.cwd() / "memory" / "brain-index.generated.md"
+            if store.is_global_library():
+                target = global_markdown_path()
+                text = store.export_library_markdown()
+            else:
+                target = Path.cwd() / "memory" / "brain-index.generated.md"
+                text = store.export_markdown()
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(store.export_markdown(), encoding="utf-8")
+            target.write_text(text, encoding="utf-8")
             _print({"ok": True, "written": str(target)})
         return 0
     finally:

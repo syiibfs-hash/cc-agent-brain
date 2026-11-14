@@ -86,9 +86,11 @@ auto-capture.
 
 ```bash
 python .claude/hooks/cc-agent-brain/brain_store.py serve-mcp
-# second database file, not a shared multi-agent service:
+# shared global library (brain.db + library.md under the global directory):
 python .claude/hooks/cc-agent-brain/brain_store.py --global serve-mcp
-# explicit path:
+# same library, explicit directory (overrides CC_AGENT_BRAIN_GLOBAL_DIR):
+python .claude/hooks/cc-agent-brain/brain_store.py --global-dir ~/.cc-agent-brain --global serve-mcp
+# one SQLite file, not the shared pair (--db wins over --global):
 python /abs/path/to/brain_store.py --db /abs/path/to/brain.db serve-mcp
 ```
 
@@ -101,13 +103,71 @@ The tool list is the same on both eras.
 | Tool | Arguments | What the handler does |
 |------|-----------|------------------------|
 | `brain_search` | `query`, `k?`, `layer?` | lexical FTS search (BM25 lists fused with RRF) |
-| `brain_add_memory` | `title`, `body`, `layer?`, `confidence?`, `tags?`, `source?` | insert one active memory row. No `supersedes` argument on this tool |
-| `brain_forget` | `id` | set that row to `expired` (row kept, removed from the FTS index) |
-| `brain_timeline` | `limit?` | recent memory rows by `updated_at`, every status. Not an as-of query |
-| `brain_stats` | — | counts by kind, layer, and status |
+| `brain_add_memory` | `title`, `body`, `layer?`, `confidence?`, `tags?`, `source?`, `writer?` | insert one active memory row. No `supersedes` argument on this tool. `writer` is stored on the row |
+| `brain_forget` | `id` | set that row to `expired` (row kept, removed from the FTS index). The original `writer` stays |
+| `brain_timeline` | `limit?` | recent memory rows by `updated_at`, every status, including `writer`. Not an as-of query |
+| `brain_stats` | — | counts by kind, layer, status, and writer |
 
 `brain_search` is the same `BrainStore.search` as the CLI: keyword lists only,
-no vector channel, no past-timestamp argument.
+no vector channel, no past-timestamp argument. Hits include the stored
+`writer`.
+
+`writer` on `brain_add_memory` is the caller-supplied identity. When the
+argument is omitted, the process uses `CC_AGENT_BRAIN_WRITER`, then
+`unspecified`. The server does not read the client name out of the handshake
+and does not decide Cursor versus Codex for you. Put a different
+`CC_AGENT_BRAIN_WRITER` in each client's server environment if you want the
+rows labeled. `source` is still provenance (`mcp` by default on this tool),
+not the writer.
+
+A write through a `serve-mcp` that opened the global database also rewrites
+`<global-dir>/library.md`. That file lists active memories and counts events
+by kind and writer. It does not copy event text.
+
+## Pointing clients at the shared library
+
+The shared directory defaults to `~/.cc-agent-brain` (`brain.db` and
+`library.md`). `CC_AGENT_BRAIN_GLOBAL_DIR` or `--global-dir` moves both files.
+Project `.cc-agent-brain/brain.db` is unchanged.
+
+Give every client the same directory and `--global`, and a writer label you
+choose. Example shape for Claude Code `.mcp.json` and Cursor `.cursor/mcp.json`
+(Cursor keeps `"type": "stdio"`):
+
+```json
+{
+  "mcpServers": {
+    "cc-agent-brain": {
+      "command": "python",
+      "args": ["/abs/path/to/brain_store.py", "--global", "serve-mcp"],
+      "env": {
+        "CC_AGENT_BRAIN_WRITER": "claude-code",
+        "CC_AGENT_BRAIN_GLOBAL_DIR": "/home/you/.cc-agent-brain"
+      }
+    }
+  }
+}
+```
+
+Use `"cursor"` or `"codex"` (or any other label) as `CC_AGENT_BRAIN_WRITER`
+on the other clients. Codex can pass the same variables on the server
+environment, for example:
+
+```toml
+[mcp_servers.cc-agent-brain]
+command = "python"
+args = ["/abs/path/to/brain_store.py", "--global", "serve-mcp"]
+cwd = "/abs/path/to/project"
+
+[mcp_servers.cc-agent-brain.env]
+CC_AGENT_BRAIN_WRITER = "codex"
+CC_AGENT_BRAIN_GLOBAL_DIR = "/home/you/.cc-agent-brain"
+```
+
+`CC_AGENT_BRAIN_GLOBAL_DIR` may be omitted when the default directory is the
+one you want. A tool call can still pass `writer` and that value wins over
+the environment variable. This is one SQLite file on this machine. It is not
+a daemon and it does not sync to another computer.
 
 ## What the installer writes
 
@@ -181,7 +241,9 @@ cwd = "/abs/path/to/project"
 ## Scope
 
 - One process, one database path (`--db`, `--global`, or the project default
-  `.cc-agent-brain/brain.db`). The three project configs above launch that
-  same `serve-mcp`. This is not a shared daemon for several agents.
+  `.cc-agent-brain/brain.db`). The installer entries above launch `serve-mcp`
+  against the project file. The shared-library examples further up are how
+  you point those same clients at one global file instead. Separate processes
+  can open that file. This is not a shared daemon.
 - stdio only. The server does not listen on a port.
 - Write tools are enabled. There is no read-only mode.

@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from _utils import brain_cli, read_stdin_json
+from _utils import brain_cli, hook_writer, read_stdin_json
 
 MAX_TEXT = 4000
 MAX_TOOL_INPUT = 800
@@ -102,7 +102,21 @@ def main() -> int:
             if not uuid or uuid in processed:
                 continue
             for kind, content, tags in extract(msg):
-                brain_cli(["event", "--kind", kind, "--content", content, "--tags", ",".join(tags), "--source", "transcript"])
+                brain_cli(
+                    [
+                        "event",
+                        "--kind",
+                        kind,
+                        "--content",
+                        content,
+                        "--tags",
+                        ",".join(tags),
+                        "--source",
+                        "transcript",
+                        "--writer",
+                        hook_writer(),
+                    ]
+                )
             processed.add(uuid)
             new_count += 1
             if new_count >= MAX_NEW_PER_RUN:

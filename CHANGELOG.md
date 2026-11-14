@@ -9,6 +9,8 @@
 
 ### Added
 - The installer merges one local stdio MCP server, `cc-agent-brain`, into Claude Code `.mcp.json`, Cursor `.cursor/mcp.json`, and Codex `.codex/config.toml`. Other servers in those files are left in place.
+- Shared global library: `~/.cc-agent-brain/brain.db` and `library.md`, or another directory via `--global-dir` / `CC_AGENT_BRAIN_GLOBAL_DIR`. `serve-mcp --global` and MCP writes use that SQLite file. `library.md` is rebuilt from active memories and from event counts, not from raw event text. Project `.cc-agent-brain/brain.db` stays the project store. The installer does not retarget the three MCP entries at the global file.
+- Writer on inserts: explicit `--writer` or `brain_add_memory` `writer`, else `CC_AGENT_BRAIN_WRITER`, else `unspecified`. Claude Code hooks pass `claude-code` when the variable is unset. `search`, `timeline`, and `stats` return it. Existing databases gain the column in `_migrate`; old rows keep an empty writer. `source` is unchanged.
 
 ## 0.2.0 — Local memory engine
 
