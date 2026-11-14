@@ -41,8 +41,11 @@ What a non-dry-run does:
   file is not replaced or deleted, and rows already stored in it stay.
 - Merges one stdio server named `cc-agent-brain` into `.mcp.json`,
   `.cursor/mcp.json`, and `.codex/config.toml`. Other servers in those files
-  stay. A file that does not parse is left untouched. Shapes are in
-  [`docs/mcp.md`](mcp.md).
+  stay. A file that does not parse is left untouched. Those entries still
+  launch `serve-mcp` without `--global`, so they use the project database.
+  They do not create `~/.cc-agent-brain/`. To point the three clients at the
+  shared global library, add `--global` and `CC_AGENT_BRAIN_WRITER` as in
+  [`docs/mcp.md`](mcp.md). Shapes of the default merge are in that doc too.
 
 ## Dry run
 

@@ -65,7 +65,7 @@ Ask:
 
 1. Memory scope:
    - project only (default): `.cc-agent-brain/brain.db`
-   - project + global profile: also use `~/.cc-agent-brain/brain.db` (identity/preferences shared across projects)
+   - project + global profile: also use `~/.cc-agent-brain/brain.db` (or `CC_AGENT_BRAIN_GLOBAL_DIR`). That directory's `library.md` is maintained from the global store. Writes record `writer` (`--writer`, else `CC_AGENT_BRAIN_WRITER`, else `unspecified`)
 2. Capture intensity:
    - cautious: short summaries only
    - standard (recommended): key decisions, replies and tool actions silently indexed

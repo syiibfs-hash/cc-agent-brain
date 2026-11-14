@@ -9,9 +9,9 @@
 3. **有时间列，没有 as-of 查询。** `valid_from`、`valid_to`、`created_at`、`updated_at` 会写在行上。取代和失效会保留旧行。`search` 只看 `status='active'`。`timeline` 按 `updated_at` 列最近的行。不能按某个过去时点回放当时的库。
 4. **MCP 是同一个 stdio 进程上的两个时代。** 没有现代信封时，`initialize` 仍返回 `2024-11-05`，并继续提供 `ping`、`tools/list`、`tools/call`。`params._meta` 同时带上 `io.modelcontextprotocol/protocolVersion`（字符串）和 `io.modelcontextprotocol/clientCapabilities`（对象），且版本为 `2026-07-28` 时，处理 `server/discover`、`tools/list`、`tools/call`，结果带 `resultType: "complete"` 和 `_meta` 里的 `serverInfo`（版本 `0.2.0`）。其他版本字符串返回 `-32022`。接上一个客户端仍然不等于自动捕获。
 5. **再次安装会升级框架文件。** `update.py` 再次调用 `install.py`。命名空间里的钩子、skill、agent 会被覆盖。`brain.db`、`memory/`、`wiki/`、`private/` 和已有模板保留。已有库仍会执行 `init`（`engine_state` 为 `migrated`），文件本身不替换。同一次运行把 `cc-agent-brain` 这一条 stdio 配置合并进 Claude Code、Cursor、Codex 的项目配置。
-6. **没有多 Agent 共享记忆服务。** 钩子只写当前工作目录的项目库。全局库是可选的第二个文件，不是共享守护进程。长期记忆不会自动蒸馏，要显式 `memory add`。
+6. **没有多 Agent 共享记忆服务。** 钩子只写当前工作目录的项目库。多个本地 MCP 进程可以用 `--global` 打开同一份全局 SQLite（默认 `~/.cc-agent-brain/brain.db`，旁边是 `library.md`），写入时记下调用方给出的 `writer`。这不是共享守护进程，也没有跨机器同步。安装器默认的三条 MCP 配置仍指向项目库。长期记忆不会自动蒸馏，要显式 `memory add`。
 
-未交付、本仓库没有的能力：其他客户端的自动捕获、向量或混合检索、as-of 查询、多 Agent 共享记忆。可以记在以后的工作里，不能写成现在的功能。`2026-07-28` 的 `server/discover` 和 `_meta` 已经在 `serve-mcp` 里。框架文件升级和三份 MCP 配置合并也已经在安装器里。MCP 配置不是共享记忆服务。
+未交付、本仓库没有的能力：其他客户端的自动捕获、向量或混合检索、as-of 查询、共享守护进程、跨机器同步。可以记在以后的工作里，不能写成现在的功能。`2026-07-28` 的 `server/discover` 和 `_meta` 已经在 `serve-mcp` 里。框架文件升级和三份 MCP 配置合并也已经在安装器里。可选的本机全局库和 writer 已经在引擎里。MCP 配置默认不是把三个客户端接到那份全局库上。
 
 ## 1. 定位（按代码，不按口号）
 
@@ -73,7 +73,8 @@
 | SQL 审计（重复 active、断链、90 天未更新、低置信、有事件无记忆） | 已实现 |
 | MCP stdio，`initialize` 返回 `2024-11-05`，并处理 `ping` / `tools/list` / `tools/call` | 已实现 |
 | MCP `2026-07-28`：`server/discover`、结果上的 `resultType` 与 `_meta` | 已实现。不是其他客户端的自动捕获 |
-| 钩子自动写全局库、多 Agent 共享服务 | 未实现。`search` 仅在全局库文件已存在时把它的词法列表融合进来 |
+| 钩子自动写全局库、共享守护进程、跨机器同步 | 未实现。钩子仍只写项目库 |
+| 多个 MCP 客户端打开同一份本机全局库，并在写入时记下调用方给出的 writer | 已实现。`--global` 或 `CC_AGENT_BRAIN_GLOBAL_DIR`，外加 `library.md`。安装器默认不把三条 MCP 配置改指过去。`search` 仍在该文件已存在且不是当前文件时融合它的词法列表 |
 | 自动把事件蒸馏成长期记忆 | 未实现。要 `memory add` |
 | 升级时覆盖命名空间钩子、skill、agent，并保留 brain.db / memory / wiki / private | 已实现 |
 | 合并 Claude Code、Cursor、Codex 的项目 MCP 配置，指向同一个 `serve-mcp` | 已实现。不是多 Agent 共享记忆，也不是这些客户端的自动捕获 |
@@ -83,7 +84,7 @@
 - 可选的本地向量通道，以及一套召回评测。做完之前，文档里的 RRF 仍然只是词法多路融合。
 - 打包分发、导入导出。
 - 可选的加密备份。
-- 多 Agent 共享记忆服务。MCP 配置只是让客户端启动本地 `serve-mcp`。
+- 共享守护进程、按 Agent 分命名空间、跨机器同步。
 
 ## 8. 还说得清的使用信号
 

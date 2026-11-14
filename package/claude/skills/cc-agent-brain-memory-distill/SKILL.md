@@ -26,7 +26,7 @@ python .claude/hooks/cc-agent-brain/brain_store.py memory add \
   --title "..." --body "..." \
   --layer semantic|procedural|working|episodic \
   --confidence high|medium|low \
-  --tags "tag1,tag2" --source "wiki/..."
+  --tags "tag1,tag2" --source "wiki/..." --writer "claude-code"
 ```
 
 Layers:
@@ -67,4 +67,7 @@ Also keep `memory/MEMORY.md` and the relevant memory markdown files aligned.
 ## Memory item contract
 
 Every memory carries: id, layer, title, body, tags, confidence, status,
-valid_from, valid_to, source, supersedes, timestamps.
+valid_from, valid_to, source, writer, supersedes, timestamps.
+`writer` is the caller-supplied identity (`--writer`, otherwise
+`CC_AGENT_BRAIN_WRITER`, otherwise `unspecified`). It is not inferred from
+which desktop product is open.

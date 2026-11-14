@@ -106,9 +106,17 @@ this repository.
    [`docs/install.md`](docs/install.md).
 6. **There is no shared multi-agent memory service.** Hooks write the project
    database for the current working directory. They never pass `--global`.
-   The global file is a second SQLite database that `search` will include when
-   the file is already there. Nothing in this tree coordinates multiple agents,
-   namespaces memory per agent, or runs a shared daemon.
+   Nothing in this tree namespaces memory per agent or runs a shared daemon.
+   Several local MCP processes can still open one global SQLite file. Point
+   `serve-mcp` at it with `--global` or `CC_AGENT_BRAIN_GLOBAL_DIR` (default
+   `~/.cc-agent-brain/`, which also holds `library.md`). Set
+   `CC_AGENT_BRAIN_WRITER`, or pass `writer` on the write. The engine stores
+   that string. It does not detect Cursor versus Codex. `library.md` is
+   rebuilt from active memories and from event counts. Event text stays in
+   SQLite. The installer does not create this directory and does not retarget
+   the three project MCP entries. There is no cross-machine sync. `search`
+   still fuses the global file when it exists and is not the file already
+   open. See [`docs/mcp.md`](docs/mcp.md).
 
 ### Quick install
 
@@ -153,7 +161,9 @@ does not overwrite `memory/`, `wiki/`, `private/`, existing templates, or the
 database file.
 
 `~/.cc-agent-brain/brain.db` is not created by the installer. Create and write
-it yourself with `--global` if you want `search` to fuse that file in.
+it yourself with `--global` if you want `search` to fuse that file in. The
+same directory's `library.md` is maintained from that store. See
+[`docs/mcp.md`](docs/mcp.md).
 
 ### The engine CLI
 
@@ -194,7 +204,7 @@ capture pipeline.
 
 Layers: `working`, `episodic`, `semantic`, `procedural`.
 Status: `active`, `superseded`, `expired`, `archived`.
-Columns include `valid_from`, `valid_to`, `confidence`, `source`, `supersedes`,
+Columns include `valid_from`, `valid_to`, `confidence`, `source`, `writer`, `supersedes`,
 `created_at`, `updated_at`. Active search does not filter on the validity
 columns, and there is no as-of query. See [`docs/memory-design.md`](docs/memory-design.md).
 
@@ -215,14 +225,16 @@ Shipped today is the Claude Code hook loop, the SQLite/FTS5 engine, lexical
 RRF across those FTS lists, supersede/expire rows, the audit CLI, the
 dual-era stdio MCP server (`initialize` → `2024-11-05`; `2026-07-28` via
 `server/discover` and `_meta`), an upgrade that overwrites the namespaced
-framework files, and the three project MCP config merges.
+framework files, the three project MCP config merges, and an optional shared
+global library (`--global`, writer on inserts, `library.md`). The installer
+does not point those MCP entries at the global file.
 
 Still unshipped, and not implemented in this repository:
 
 - auto-capture or automatic recall for Cursor, Codex, Gemini CLI, Claude Desktop, or other clients
 - vector search, embeddings, or lexical-plus-vector hybrid retrieval
 - as-of / time-travel queries
-- a shared multi-agent memory service (the MCP entries launch one local `serve-mcp`; they are not a shared daemon)
+- a shared daemon, per-agent namespaces, or cross-machine sync (local MCP processes can open one global SQLite file; see [`docs/mcp.md`](docs/mcp.md))
 
 Older roadmap notes (not a commitment, and not a description of this tree):
 
@@ -285,7 +297,7 @@ search 用 RRF 融合多路词法命中
 3. **表里有时间字段，没有 as-of 历史查询。** 每条记忆有 `valid_from`、`valid_to`、`created_at`、`updated_at`。`memory add --supersedes` 和 `memory expire` 会留下旧行、改状态并写入 `valid_to`。`search` 只返回 `status='active'` 的行。`timeline` 按 `updated_at` 列出最近的记忆行。没有任何命令接受一个过去的时间点并返回当时的库内容。
 4. **MCP 服务器在同一个 stdio 进程上同时说 `2024-11-05` 和 `2026-07-28`。** 没有现代信封时，`initialize` 仍返回 `protocolVersion` `2024-11-05`、`capabilities: {tools: {}}`，以及 `serverInfo.version` `"2"`（这是 schema id）。这条路径上的 `ping`、`tools/list`、`tools/call` 不带 `resultType`。`params._meta` 里同时有字符串 `io.modelcontextprotocol/protocolVersion` 和对象 `io.modelcontextprotocol/clientCapabilities` 时走现代协议。版本是 `2026-07-28` 时，`server/discover`、`tools/list`、`tools/call` 返回 `resultType: "complete"`，并在 `_meta["io.modelcontextprotocol/serverInfo"]` 里放版本 `0.2.0`。`server/discover` 的 `supportedVersions` 先是 `2026-07-28`，然后是 `2024-11-05`。该信封上的其他版本字符串返回 JSON-RPC `-32022`，`data` 里有 `supported` 和 `requested`。成功的 `2026-07-28` 请求和这种被拒绝的现代信封都会把该进程固定在现代时代，之后的 `initialize` 也返回 `-32022`。只发 `initialize` 的进程保持旧握手。没有 `id` 的消息不会得到响应。细节见 [`docs/mcp.md`](docs/mcp.md)。协议能对上，并不等于其他客户端有了自动捕获。
 5. **再次运行会升级框架文件，并合并 MCP 配置。** `installer/update.py` 再次调用 `install.py`。它覆盖 `.claude/hooks/cc-agent-brain/`、`.claude/skills/cc-agent-brain-*/` 和 `.claude/agents/cc-agent-brain-*.md`。它不替换整个 `.claude/`。已存在的 `memory/`、`wiki/`、`private/` 和模板文件保持原样。`.cc-agent-brain/brain.db` 不会被替换或删除。即使库已经存在，安装器也会对它执行 `brain_store.py init`（文件已存在时 `engine_state` 为 `migrated`，新建时为 `initialized`）。`_migrate()` 只补建缺失的表，已有记忆行还在。settings 合并只追加还没有的 Claude Code 钩子。同一次运行把名为 `cc-agent-brain` 的一条 stdio 服务合并进 `.mcp.json`、`.cursor/mcp.json` 和 `.codex/config.toml`，其他服务保留。解析失败的配置文件保持不动。详见 [`docs/install.md`](docs/install.md)。
-6. **没有多 Agent 共享记忆服务。** 钩子写入当前工作目录下的项目库，并且不会传 `--global`。全局库是第二个 SQLite 文件，只有它已经存在时 `search` 才会把它算进去。本仓库没有多 Agent 协调、按 Agent 分命名空间，也没有共享守护进程。
+6. **没有多 Agent 共享记忆服务。** 钩子写入当前工作目录下的项目库，并且不会传 `--global`。本仓库没有按 Agent 分命名空间，也没有共享守护进程。多个本地 MCP 进程仍然可以打开同一份全局 SQLite。用 `--global` 或 `CC_AGENT_BRAIN_GLOBAL_DIR` 把 `serve-mcp` 指过去（默认目录是 `~/.cc-agent-brain/`，里面还有 `library.md`）。设置 `CC_AGENT_BRAIN_WRITER`，或在写入时传 `writer`。引擎只保存这个字符串，不会判断当前是 Cursor 还是 Codex。`library.md` 由活跃记忆和事件计数重新生成，事件原文留在 SQLite。安装器不会创建这个目录，也不会把三条项目 MCP 配置改指到全局库。没有跨机器同步。全局库文件存在、且不是当前打开的那个文件时，`search` 仍会把它的列表融合进去。详见 [`docs/mcp.md`](docs/mcp.md)。
 
 ### 快速安装
 
@@ -323,7 +335,7 @@ my-project/
 
 再次运行会覆盖命名空间里的钩子、技能和代理，对已有 `brain.db` 执行 `init`，并合并上面三个 MCP 条目。它不覆盖 `memory/`、`wiki/`、`private/`、已有模板或数据库文件本身。
 
-安装器不会创建 `~/.cc-agent-brain/brain.db`。只有你自己用 `--global` 建好并写入之后，`search` 才会把这个文件融合进去。
+安装器不会创建 `~/.cc-agent-brain/brain.db`。只有你自己用 `--global` 建好并写入之后，`search` 才会把这个文件融合进去。同一目录下的 `library.md` 会跟着这份库更新。详见 [`docs/mcp.md`](docs/mcp.md)。
 
 ### 引擎命令行
 
@@ -359,7 +371,7 @@ $BRAIN serve-mcp                              # stdio MCP：2024-11-05 与 2026-
 
 ### 记忆记录
 
-四层：`working`、`episodic`、`semantic`、`procedural`。状态：`active`、`superseded`、`expired`、`archived`。列里包括 `valid_from`、`valid_to`、置信度、来源、`supersedes`、`created_at`、`updated_at`。活跃检索不按这些时间列过滤，也没有 as-of 查询。详见 [`docs/memory-design.md`](docs/memory-design.md)。
+四层：`working`、`episodic`、`semantic`、`procedural`。状态：`active`、`superseded`、`expired`、`archived`。列里包括 `valid_from`、`valid_to`、置信度、来源、`writer`、`supersedes`、`created_at`、`updated_at`。活跃检索不按这些时间列过滤，也没有 as-of 查询。详见 [`docs/memory-design.md`](docs/memory-design.md)。
 
 ### 卸载
 
@@ -371,14 +383,14 @@ python installer/uninstall.py --target /path/to/your/project
 
 ### 已经交付，以及仍然没有的
 
-当前交付的是：Claude Code 钩子闭环、SQLite/FTS5 引擎、对这些 FTS 列表做的词法 RRF、supersede/expire 行、审计 CLI、双协议 stdio MCP（`initialize` → `2024-11-05`；`2026-07-28` 走 `server/discover` 和 `_meta`）、会覆盖命名空间框架文件的升级，以及三份项目 MCP 配置的合并。
+当前交付的是：Claude Code 钩子闭环、SQLite/FTS5 引擎、对这些 FTS 列表做的词法 RRF、supersede/expire 行、审计 CLI、双协议 stdio MCP（`initialize` → `2024-11-05`；`2026-07-28` 走 `server/discover` 和 `_meta`）、会覆盖命名空间框架文件的升级、三份项目 MCP 配置的合并，以及可选的本机全局库（`--global`、写入时的 writer、`library.md`）。安装器不会把那三条 MCP 配置改指到全局库。
 
 下面这些还没有实现，不要当成已有能力：
 
 - Cursor、Codex、Gemini CLI、Claude Desktop 或其他客户端的自动捕获与自动召回
 - 向量检索、embedding，或词法加向量的混合检索
 - as-of / 按历史时点查询
-- 多 Agent 共享记忆服务（MCP 条目只是启动本地 `serve-mcp`，不是共享守护进程）
+- 共享守护进程、按 Agent 分命名空间，或跨机器同步（多个本地 MCP 进程可以打开同一份全局 SQLite，见 [`docs/mcp.md`](docs/mcp.md)）
 
 旧路线图里的想法只是笔记，不是本仓库的现状，也不是交付承诺：
 

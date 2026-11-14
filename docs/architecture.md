@@ -41,9 +41,12 @@ optional stdio process: MCP 2024-11-05 via initialize, and 2026-07-28 via _meta
   `private/`, and existing templates in place, and merges Claude Code, Cursor,
   and Codex MCP entries that launch the same `serve-mcp`. That is not a
   shared multi-agent memory service.
-- Hooks write the project DB of the current working directory. There is no
-  shared multi-agent memory service. The optional global DB is only included
-  by `search` when that file already exists.
+- Hooks write the project DB of the current working directory. They do not
+  pass `--global`. There is no shared daemon and no cross-machine sync.
+  `serve-mcp --global` (or `CC_AGENT_BRAIN_GLOBAL_DIR`) opens one on-disk
+  library, `<global-dir>/brain.db` plus `<global-dir>/library.md`, default
+  `~/.cc-agent-brain`. Inserts store a caller-supplied `writer`. `search`
+  still fuses that file when it exists and is not the file already open.
 
 ## Layers
 
@@ -95,9 +98,12 @@ auto-capture.
 ### 5. Files
 
 - `.cc-agent-brain/brain.db` — project store written by the hooks (git-ignored).
-- `~/.cc-agent-brain/brain.db` — optional second file. Hooks do not create it.
+- `~/.cc-agent-brain/brain.db` and `library.md` — optional shared library.
+  Override the directory with `CC_AGENT_BRAIN_GLOBAL_DIR` or `--global-dir`.
+  Hooks do not create it. `library.md` lists active memories and event counts,
+  not raw event text.
 - `wiki/` — notes, including raw prompt copies from `prompt_capture.py`.
-- `memory/` — Markdown the onboarding skill fills, plus `sync-md` output.
+- `memory/` — Markdown the onboarding skill fills, plus project `sync-md` output.
 - `private/` — local notes. The engine does not read this directory by itself.
 
 ## Design constraints that the code follows
